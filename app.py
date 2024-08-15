@@ -1,0 +1,96 @@
+import streamlit as st
+from langchain_community.vectorstores import FAISS
+from langchain_huggingface import  HuggingFaceEmbeddings
+import os
+from dotenv import load_dotenv
+load_dotenv()
+api_key = os.getenv("GROQ_API_KEY")
+os.getenv("HF_TOKEN")
+llm = ChatGroq(model_name = "Gemma-7b-It",groq_api_key=api_key)
+embeddings=HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+review_text =FAISS.load_local("reviewText_store",embeddings,allow_dangerous_deserialization=True)
+summary_store =FAISS.load_local("summary_store",embeddings,allow_dangerous_deserialization=True)
+
+from langchain.chains import create_retrieval_chain
+from langchain.chains.combine_documents import create_stuff_documents_chain
+from langchain_core.prompts import ChatPromptTemplate
+
+review_retriver = review_text.as_retriever()
+summary_retriver = summary_store.as_retriever()
+
+system_prompt_review_text = (
+    "You are an Expert Recommendation System "
+    "Use the following pieces of retrived context to recommened "
+    "based on user query "
+    "Suggest Top 3 Best Product Name Only"
+    "Do Not Generate Provided Thing Out Of Provided {context}"
+    "Do Not Provide Any Additional Information Out Of {context}"
+    "\n\n"
+    "{context}"
+)
+
+prompt_review_text = ChatPromptTemplate.from_messages(
+    [
+    ("system",system_prompt_review_text),
+    ("human", "{input}"),
+    ]
+)
+
+question_answer_chain_review = create_stuff_documents_chain(llm,prompt_review_text)
+rag_chain_review = create_retrieval_chain(review_retriver,question_answer_chain_review)
+
+system_prompt_summary_text = (
+    "You are an Expert Recommendation System "
+    "Use the following pieces of summary context to recommened "
+    "based on user query "
+    "Suggest Best Top 3 Review For Product Asked By User From {context}"
+    "Do Not Generate Provided Thing Out Of Provided {context}"
+    "Do Not Provide Any Additional Information Out Of {context}"
+    "\n\n"
+    "{context}"
+)
+
+prompt_summary_text = ChatPromptTemplate.from_messages(
+    [
+    ("system",system_prompt_summary_text),
+    ("human", "{input}"),
+    ]
+)
+
+question_answer_chain_summary = create_stuff_documents_chain(llm,prompt_summary_text)
+rag_chain_summary = create_retrieval_chain(summary_retriver,question_answer_chain_summary)
+
+from langchain import LLMChain
+from langchain.prompts import PromptTemplate
+
+def generate_final_prompt(review_response, summary_response, query):
+    """Generate the final prompt for the LLMChain"""
+    prompt = (
+        "You Are An Expert Product Recommender "
+        "Provide Top Product Name"
+        "Based On {review}, {summary} Only "
+        "For The User Query: {query} "
+        "Do Not Generate Provided Thing Out Of Provided {review}, {summary}"
+        "Do Not Provide Any Additional Information Out Of {review}, {summary}"
+        "Provide Name Of Product Given In {review}, {summary} Only No Other Information Required"
+    ).format(review=review_response, summary=summary_response, query=query)
+    return prompt
+
+def recommendation(query):
+    """Provide a product recommendation based on the user query"""
+    review_response = rag_chain_review.invoke({"input": query})
+    summary_response = rag_chain_summary.invoke({"input": query})
+    final_prompt = generate_final_prompt(review_response['answer'], summary_response['answer'], query)
+    # print("Final Prompt: ", final_prompt)
+    prompt_template = PromptTemplate(input_variables=["query"], template=final_prompt)
+    chain = LLMChain(llm=llm, prompt=prompt_template)
+    response = chain({"query": query})
+    return response['text']
+
+st.title("Product Recommendation System")
+
+query = st.text_input("Enter your query")
+
+if st.button("Get Recommendation"):
+    recommendation_text = recommendation(query)
+    st.write(recommendation_text)
